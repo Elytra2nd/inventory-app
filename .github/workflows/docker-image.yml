@@ -1,0 +1,82 @@
+name: CI/CD Pipeline Inventory App
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  # ====================================================
+  # JOB 1: BUILD & TEST (Verifikasi Kualitas Kode)
+  # ====================================================
+  build-test:
+    name: Test Build (CI)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 1. Setup PHP untuk cek Backend
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, xml, bcmath, zip
+
+      # 2. Cek apakah Composer (Backend) bisa terinstall tanpa error
+      - name: Install Composer Dependencies
+        run: composer install -q --no-ansi --no-interaction --no-scripts --no-progress --prefer-dist
+
+      # 3. Setup Node.js untuk cek Frontend
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # 4. Cek apakah React Build (Frontend) sukses
+      # Ini akan menangkap error seperti "Case Sensitivity" yang tadi Anda alami
+      - name: Test Frontend Build
+        run: |
+          npm ci
+          npm run build
+
+      # 5. Jalankan Testing Laravel (Opsional, jika sudah membuat test)
+      # - name: Execute Tests (Pest/PHPUnit)
+      #   run: php artisan test
+
+  # ====================================================
+  # JOB 2: DEPLOY (Kirim ke Server Oracle)
+  # ====================================================
+  deploy:
+    name: Deploy to Server (CD)
+    needs: build-test  # PENTING: Hanya jalan kalau Job 1 SUKSES
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.KEY }}
+          port: 22
+          script: |
+            # Masuk ke folder
+            cd ~/inventory-app
+
+            # Ambil kode terbaru
+            git pull origin main
+
+            # Bangun ulang container (Backend & Database)
+            # Kita build di server agar sesuai arsitektur ARM Oracle
+            docker compose up -d --build
+
+            # Install dependencies Frontend & Build di dalam Container
+            docker compose exec -u root -T app npm install
+            docker compose exec -u root -T app npm run build
+
+            # Maintenance Laravel
+            docker compose exec -T app php artisan migrate --force
+            docker compose exec -T app php artisan optimize:clear
+            
+            # (Opsional) Restart Queue Worker jika pakai queue
+            # docker compose exec -T app php artisan queue:restart
